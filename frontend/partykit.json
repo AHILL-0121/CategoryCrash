@@ -1,0 +1,5 @@
+{
+  "name": "categorycrash",
+  "main": "party/index.ts",
+  "compatibilityDate": "2024-03-01"
+}
