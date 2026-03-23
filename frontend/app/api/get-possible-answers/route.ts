@@ -5,6 +5,13 @@ import path from 'path';
 const logDir = path.join(process.cwd(), 'logs');
 const logFile = path.join(logDir, 'ai-usage.log');
 
+// CORS headers
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
 function ensureLogDir() {
   try {
     mkdirSync(logDir, { recursive: true });
@@ -26,6 +33,11 @@ function logAIUsage(eventType: string, data: any) {
   }
 }
 
+// Handle preflight requests
+export async function OPTIONS() {
+  return NextResponse.json({}, { headers: corsHeaders });
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { category1, category2 } = await req.json();
@@ -33,7 +45,7 @@ export async function POST(req: NextRequest) {
     if (!category1 || !category2) {
       return NextResponse.json(
         { error: 'Missing required fields' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -41,7 +53,7 @@ export async function POST(req: NextRequest) {
     if (!groqApiKey) {
       return NextResponse.json(
         { error: 'GROQ_API_KEY not configured' },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
@@ -92,7 +104,7 @@ Return ONLY the JSON array of answers, nothing else.`
       logAIUsage('FETCH_POSSIBLE_ANSWERS_ERROR', { category1, category2, error: errorText });
       return NextResponse.json(
         { error: 'AI generation failed', details: errorText },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
@@ -103,7 +115,7 @@ Return ONLY the JSON array of answers, nothing else.`
       logAIUsage('FETCH_POSSIBLE_ANSWERS_ERROR', { category1, category2, error: 'No response from AI' });
       return NextResponse.json(
         { error: 'No response from AI' },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
@@ -122,7 +134,7 @@ Return ONLY the JSON array of answers, nothing else.`
       logAIUsage('FETCH_POSSIBLE_ANSWERS_ERROR', { category1, category2, error: 'Invalid response format', response: aiResponse });
       return NextResponse.json(
         { error: 'Invalid AI response format', details: aiResponse },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
@@ -144,14 +156,14 @@ Return ONLY the JSON array of answers, nothing else.`
       category1,
       category2,
       generatedAt: new Date().toISOString(),
-    });
+    }, { headers: corsHeaders });
 
   } catch (error) {
     console.error('Generate answers error:', error);
     logAIUsage('FETCH_POSSIBLE_ANSWERS_ERROR', { error: error instanceof Error ? error.message : 'Unknown error' });
     return NextResponse.json(
       { error: 'Generation failed', details: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
