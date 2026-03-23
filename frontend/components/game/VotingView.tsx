@@ -34,7 +34,7 @@ export function VotingView({ round, players, myPlayerId, onVote }: VotingViewPro
       <div className="text-center">
         <div className="mb-4 flex justify-center">
           <img
-            src="/categorycrash-pixel-icon.svg"
+            src="/categorycrash-pixel-icon.png"
             alt="Validation"
             className="w-16 h-16"
           />

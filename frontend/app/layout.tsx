@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   title: 'CategoryCrash - Real-time Word Game',
   description: 'A fast-paced multiplayer word game where speed meets creativity',
   icons: {
-    icon: '/categorycrash-pixel-icon.svg',
+    icon: '/categorycrash-pixel-icon.png',
     apple: '/categorycrash-pixel-icon.png',
   },
   openGraph: {
