@@ -21,9 +21,9 @@ const config: Config = {
         muted: '#888880',
       },
       fontFamily: {
-        anton: ['Anton', 'sans-serif'],
-        epilogue: ['Epilogue', 'sans-serif'],
-        mono: ['DM Mono', 'monospace'],
+        anton: ['var(--font-anton)', 'Impact', 'sans-serif'],
+        epilogue: ['var(--font-epilogue)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-dm-mono)', 'ui-monospace', 'monospace'],
       },
       boxShadow: {
         brutal: '4px 4px 0 #0D0D0D',

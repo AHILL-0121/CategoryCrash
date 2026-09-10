@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import usePartySocket from 'partysocket/react';
 import type { GameRoom, ServerMessage, ClientMessage } from '@/lib/types';
 
@@ -30,89 +30,60 @@ export function useGameRoom({
 }: UseGameRoomOptions): UseGameRoomReturn {
   const [room, setRoom] = useState<GameRoom | null>(null);
   const [myPlayerId, setMyPlayerId] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const hasJoined = useRef(false);
 
   const partyHost = host || process.env.NEXT_PUBLIC_PARTYKIT_HOST || 'localhost:1999';
 
-  // PartySocket connection
   const socket = usePartySocket({
     host: partyHost,
     room: roomId,
     onMessage: (evt) => {
       try {
-        const message: ServerMessage = JSON.parse(evt.data);
-        handleServerMessage(message);
+        handleServerMessage(JSON.parse(evt.data) as ServerMessage);
       } catch (err) {
         console.error('Failed to parse message:', err);
       }
     },
     onOpen: () => {
       console.log('Connected to room:', roomId);
-      // Auto-join when connection opens
-      if (!hasJoined.current && playerName) {
-        sendMessage({ type: 'player:join', data: { name: playerName } });
-        hasJoined.current = true;
-      }
+      setIsConnected(true);
     },
     onClose: () => {
       console.log('Disconnected from room:', roomId);
+      setIsConnected(false);
     },
     onError: (err) => {
       console.error('PartySocket error:', err);
+      setIsConnected(false);
     },
   });
 
   // Handle incoming server messages
   const handleServerMessage = useCallback((message: ServerMessage) => {
     switch (message.type) {
-      case 'room:state':
-        setRoom(message.data);
-        // Set my player ID from the room state
-        const myPlayer = Object.values(message.data.players).find(
-          p => p.name === playerName
-        );
-        if (myPlayer) {
-          setMyPlayerId(myPlayer.id);
-          console.log('Found my player:', myPlayer.id, 'isHost:', myPlayer.isHost);
-        } else {
-          console.warn('Could not find player with name:', playerName, 'Available players:', Object.values(message.data.players).map(p => p.name));
-        }
+      // The server tells us our own connection id. Never infer identity from the
+      // display name — names are not unique and change on de-duplication.
+      case 'connection:ready':
+        setMyPlayerId(message.data.connectionId);
         break;
 
-      case 'player:joined':
-        setRoom(prev => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            players: {
-              ...prev.players,
-              [message.data.id]: message.data,
-            },
-          };
-        });
-        // Try to set myPlayerId if not already set
-        if (!myPlayerId && message.data.name === playerName) {
-          setMyPlayerId(message.data.id);
-          console.log('Set myPlayerId from player:joined:', message.data.id, 'isHost:', message.data.isHost);
-        }
+      case 'room:state':
+        setRoom(message.data);
         break;
 
       case 'player:left':
         setRoom(prev => {
           if (!prev) return prev;
-          const { [message.data.id]: removed, ...remainingPlayers } = prev.players;
-          return {
-            ...prev,
-            players: remainingPlayers,
-          };
+          const { [message.data.id]: _removed, ...remainingPlayers } = prev.players;
+          return { ...prev, players: remainingPlayers };
         });
         break;
 
       case 'round:start':
         setRoom(prev => {
           if (!prev) return prev;
-          // Reset all players' hasSubmitted status for the new round
+          // Reset every player's submission state for the new round.
           const resetPlayers = { ...prev.players };
           Object.keys(resetPlayers).forEach(playerId => {
             resetPlayers[playerId] = {
@@ -136,17 +107,14 @@ export function useGameRoom({
           if (!prev || !prev.currentRound) return prev;
           return {
             ...prev,
-            currentRound: {
-              ...prev.currentRound,
-              phase: message.data.phase,
-            },
+            currentRound: { ...prev.currentRound, phase: message.data.phase },
           };
         });
         break;
 
       case 'answer:locked':
         setRoom(prev => {
-          if (!prev) return prev;
+          if (!prev || !prev.players[message.data.playerId]) return prev;
           return {
             ...prev,
             players: {
@@ -160,15 +128,13 @@ export function useGameRoom({
         });
         break;
 
+      // Sent once when voting opens, then again once the AI verdicts land.
       case 'round:reveal':
         setRoom(prev => {
           if (!prev || !prev.currentRound) return prev;
           return {
             ...prev,
-            currentRound: {
-              ...prev.currentRound,
-              answers: message.data.answers,
-            },
+            currentRound: { ...prev.currentRound, answers: message.data.answers },
           };
         });
         break;
@@ -178,13 +144,14 @@ export function useGameRoom({
           if (!prev) return prev;
           const updatedPlayers = { ...prev.players };
           message.data.players.forEach(player => {
-            if (updatedPlayers[player.id]) {
-              updatedPlayers[player.id] = player;
-            }
+            updatedPlayers[player.id] = player;
           });
           return {
             ...prev,
             players: updatedPlayers,
+            currentRound: prev.currentRound
+              ? { ...prev.currentRound, answers: message.data.answers }
+              : prev.currentRound,
           };
         });
         break;
@@ -192,12 +159,9 @@ export function useGameRoom({
       case 'game:over':
         setRoom(prev => {
           if (!prev) return prev;
-          // Update players from leaderboard and store roundHistory
           const updatedPlayers = { ...prev.players };
           message.data.leaderboard.forEach(player => {
-            if (updatedPlayers[player.id]) {
-              updatedPlayers[player.id] = player;
-            }
+            updatedPlayers[player.id] = player;
           });
           return {
             ...prev,
@@ -216,16 +180,29 @@ export function useGameRoom({
       default:
         console.log('Unhandled message:', message);
     }
-  }, [playerName]);
+  }, []);
 
-  // Send message to server
+  // Join on EVERY open, not just the first. partysocket reconnects on its own
+  // after a drop; without a fresh join the socket comes back but the server has
+  // no player record bound to the new connection id, so the user becomes a
+  // ghost whose answers are silently discarded. The server treats a repeat join
+  // from a known name as a reconnect and restores the seat, score and answer.
+  useEffect(() => {
+    if (!isConnected || !socket || !playerName) return;
+    socket.send(JSON.stringify({ type: 'player:join', data: { name: playerName } }));
+  }, [isConnected, socket, playerName]);
+
+  // Clear a transient error so the same message can be shown again later.
+  useEffect(() => {
+    if (!error) return;
+    const timer = setTimeout(() => setError(null), 5000);
+    return () => clearTimeout(timer);
+  }, [error]);
+
   const sendMessage = useCallback((message: ClientMessage) => {
-    if (socket) {
-      socket.send(JSON.stringify(message));
-    }
+    socket?.send(JSON.stringify(message));
   }, [socket]);
 
-  // Public API methods
   const submitAnswer = useCallback((answer: string) => {
     sendMessage({ type: 'answer:submit', data: { answer } });
   }, [sendMessage]);
@@ -252,7 +229,7 @@ export function useGameRoom({
 
   return {
     room,
-    isConnected: !!socket,
+    isConnected,
     myPlayerId,
     error,
     submitAnswer,

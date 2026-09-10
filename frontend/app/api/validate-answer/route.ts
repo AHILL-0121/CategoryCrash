@@ -1,61 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { appendFileSync, mkdirSync } from 'fs';
-import path from 'path';
+import { GROQ_MODEL, GROQ_URL, checkInternalAuth, corsHeaders, logAIUsage } from '@/lib/ai-support';
 
-const logDir = path.join(process.cwd(), 'logs');
-const logFile = path.join(logDir, 'ai-usage.log');
+// Reasoning tokens are billed against the completion budget on
+// `openai/gpt-oss-120b` (measured: 48-56 reasoning tokens on a simple verdict,
+// against a 150 ceiling). A truncated response fails the JSON parse below, so
+// the budget carries real headroom.
+const MAX_TOKENS = 512;
+const MAX_ANSWER_LENGTH = 80;
 
-function ensureLogDir() {
-  try {
-    mkdirSync(logDir, { recursive: true });
-  } catch (err) {
-    // Directory might already exist
-  }
-}
-
-function logAIUsage(eventType: string, data: any) {
-  const timestamp = new Date().toISOString();
-  const logEntry = `[${timestamp}] ${eventType}: ${JSON.stringify(data)}\n`;
-
-  try {
-    ensureLogDir();
-    appendFileSync(logFile, logEntry);
-  } catch (err) {
-    // Fail silently if logging fails
-    console.error('Failed to write AI usage log:', err);
-  }
+export async function OPTIONS(req: NextRequest) {
+  return NextResponse.json({}, { headers: corsHeaders(req.headers.get('origin')) });
 }
 
 export async function POST(req: NextRequest) {
+  const cors = corsHeaders(req.headers.get('origin'));
+
+  const denied = checkInternalAuth(req);
+  if (denied) return denied;
+
   try {
-    const { answer, category1, category2 } = await req.json();
+    const body = await req.json();
+    const answer = typeof body?.answer === 'string' ? body.answer.trim().slice(0, MAX_ANSWER_LENGTH) : '';
+    const category1 = typeof body?.category1 === 'string' ? body.category1 : '';
+    const category2 = typeof body?.category2 === 'string' ? body.category2 : '';
 
     if (!answer || !category1 || !category2) {
-      return NextResponse.json(
-        { error: 'Missing required fields' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400, headers: cors });
     }
 
     const groqApiKey = process.env.GROQ_API_KEY;
     if (!groqApiKey) {
-      return NextResponse.json(
-        { error: 'GROQ_API_KEY not configured' },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: 'GROQ_API_KEY not configured' }, { status: 500, headers: cors });
     }
 
     logAIUsage('VALIDATION_START', { answer, category1, category2 });
 
-    // Call Groq API
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch(GROQ_URL, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${groqApiKey}`,
+        Authorization: `Bearer ${groqApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages: [
           {
             role: 'system',
@@ -66,12 +53,13 @@ Rules for validation:
 2. Be strict but fair - obvious fits are valid, stretched interpretations are invalid
 3. Consider common knowledge and general understanding
 4. Reject answers that only fit one category or require too much mental gymnastics
+5. Reject nonsense, single letters, and answers padded with unrelated words
 
 Respond ONLY with a JSON object in this exact format:
 {
   "valid": true/false,
   "reason": "Brief explanation (max 50 words)"
-}`
+}`,
           },
           {
             role: 'user',
@@ -79,11 +67,11 @@ Respond ONLY with a JSON object in this exact format:
 Category 2: ${category2}
 Answer: "${answer}"
 
-Is this answer valid for BOTH categories? Respond with JSON only.`
-          }
+Is this answer valid for BOTH categories? Respond with JSON only.`,
+          },
         ],
         temperature: 0.3,
-        max_tokens: 150,
+        max_tokens: MAX_TOKENS,
       }),
     });
 
@@ -91,62 +79,49 @@ Is this answer valid for BOTH categories? Respond with JSON only.`
       const errorText = await response.text();
       console.error('Groq API error:', errorText);
       logAIUsage('VALIDATION_ERROR', { answer, category1, category2, error: errorText });
-      return NextResponse.json(
-        { error: 'AI validation failed', details: errorText },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: 'AI validation failed' }, { status: 502, headers: cors });
     }
 
     const data = await response.json();
-    const aiResponse = data.choices[0]?.message?.content;
+    const aiResponse: unknown = data?.choices?.[0]?.message?.content;
 
-    if (!aiResponse) {
+    if (typeof aiResponse !== 'string' || !aiResponse) {
       logAIUsage('VALIDATION_ERROR', { answer, category1, category2, error: 'No response from AI' });
-      return NextResponse.json(
-        { error: 'No response from AI' },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: 'No response from AI' }, { status: 502, headers: cors });
     }
 
-    // Parse the AI response
-    let validation;
+    let validation: { valid?: unknown; reason?: unknown };
     try {
-      // Extract JSON from response (in case there's extra text)
       const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        validation = JSON.parse(jsonMatch[0]);
-      } else {
-        validation = JSON.parse(aiResponse);
-      }
-    } catch (parseError) {
+      validation = JSON.parse(jsonMatch ? jsonMatch[0] : aiResponse);
+    } catch {
       console.error('Failed to parse AI response:', aiResponse);
-      logAIUsage('VALIDATION_ERROR', { answer, category1, category2, error: 'Invalid response format', response: aiResponse });
-      return NextResponse.json(
-        { error: 'Invalid AI response format', details: aiResponse },
-        { status: 500 }
-      );
+      logAIUsage('VALIDATION_ERROR', {
+        answer,
+        category1,
+        category2,
+        error: 'Invalid response format',
+        response: aiResponse,
+      });
+      return NextResponse.json({ error: 'Invalid AI response format' }, { status: 502, headers: cors });
     }
 
     const isValid = validation.valid === true;
+    const reason = typeof validation.reason === 'string' ? validation.reason : 'No reason provided';
+
     logAIUsage('VALIDATION_SUCCESS', {
       answer,
       category1,
       category2,
       valid: isValid,
-      reason: validation.reason
+      reason,
+      usage: data?.usage,
     });
 
-    return NextResponse.json({
-      valid: isValid,
-      reason: validation.reason || 'No reason provided',
-    });
-
+    return NextResponse.json({ valid: isValid, reason }, { headers: cors });
   } catch (error) {
     console.error('Validation error:', error);
     logAIUsage('VALIDATION_ERROR', { error: error instanceof Error ? error.message : 'Unknown error' });
-    return NextResponse.json(
-      { error: 'Validation failed', details: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Validation failed' }, { status: 500, headers: cors });
   }
 }

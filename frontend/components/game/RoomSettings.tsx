@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
-import type { GameRoom } from '@/lib/types';
+import { useEffect, useState } from 'react';
+import type { GameRoom, Difficulty } from '@/lib/types';
+import { LIMITS } from '@/lib/types';
 import { Button } from '../ui/Button';
 import { useToast } from '@/contexts/ToastContext';
 
@@ -10,20 +11,27 @@ interface RoomSettingsProps {
   maxRounds: number;
   isHost: boolean;
   onUpdateSettings: (settings: Partial<GameRoom['settings']>, maxRounds?: number) => void;
-  onUpdateMaxRounds: (maxRounds: number) => void; // Kept for backwards compatibility
 }
 
-export function RoomSettings({
-  settings,
-  maxRounds,
-  isHost,
-  onUpdateSettings,
-  onUpdateMaxRounds
-}: RoomSettingsProps) {
+const DIFFICULTY_BLURB: Record<Difficulty, string> = {
+  easy: 'Common, straightforward categories',
+  medium: 'Moderately challenging combinations',
+  hard: 'Tricky and creative categories',
+};
+
+export function RoomSettings({ settings, maxRounds, isHost, onUpdateSettings }: RoomSettingsProps) {
   const { showToast } = useToast();
   const [isOpen, setIsOpen] = useState(false);
   const [localSettings, setLocalSettings] = useState(settings);
   const [localMaxRounds, setLocalMaxRounds] = useState(maxRounds);
+
+  // Resync whenever the server state changes while the panel is closed, so
+  // opening it never shows a stale snapshot from first render.
+  useEffect(() => {
+    if (isOpen) return;
+    setLocalSettings(settings);
+    setLocalMaxRounds(maxRounds);
+  }, [isOpen, settings, maxRounds]);
 
   if (!isHost) return null;
 
@@ -60,6 +68,7 @@ export function RoomSettings({
             <h3 className="font-anton text-lg tracking-wider">ROOM SETTINGS</h3>
             <button
               onClick={handleCancel}
+              aria-label="Close settings"
               className="text-muted hover:text-press-black text-xl leading-none"
             >
               ✕
@@ -68,14 +77,15 @@ export function RoomSettings({
 
           {/* Number of Rounds */}
           <div>
-            <label className="block font-epilogue font-semibold text-sm mb-2">
+            <label htmlFor="setting-rounds" className="block font-epilogue font-semibold text-sm mb-2">
               Number of Rounds
             </label>
             <div className="flex items-center gap-3">
               <input
+                id="setting-rounds"
                 type="range"
-                min="3"
-                max="15"
+                min={LIMITS.maxRounds.min}
+                max={LIMITS.maxRounds.max}
                 value={localMaxRounds}
                 onChange={(e) => setLocalMaxRounds(Number(e.target.value))}
                 className="flex-1"
@@ -88,14 +98,15 @@ export function RoomSettings({
 
           {/* Time Limit */}
           <div>
-            <label className="block font-epilogue font-semibold text-sm mb-2">
+            <label htmlFor="setting-time" className="block font-epilogue font-semibold text-sm mb-2">
               Answer Time (seconds)
             </label>
             <div className="flex items-center gap-3">
               <input
+                id="setting-time"
                 type="range"
-                min="10"
-                max="60"
+                min={LIMITS.timeLimit.min / 1000}
+                max={LIMITS.timeLimit.max / 1000}
                 step="5"
                 value={localSettings.timeLimit / 1000}
                 onChange={(e) => setLocalSettings({
@@ -112,14 +123,15 @@ export function RoomSettings({
 
           {/* Reveal Time */}
           <div>
-            <label className="block font-epilogue font-semibold text-sm mb-2">
+            <label htmlFor="setting-reveal" className="block font-epilogue font-semibold text-sm mb-2">
               Category Reveal Time (seconds)
             </label>
             <div className="flex items-center gap-3">
               <input
+                id="setting-reveal"
                 type="range"
-                min="2"
-                max="10"
+                min={LIMITS.revealTime.min / 1000}
+                max={LIMITS.revealTime.max / 1000}
                 step="1"
                 value={localSettings.revealTime / 1000}
                 onChange={(e) => setLocalSettings({
@@ -134,19 +146,43 @@ export function RoomSettings({
             </div>
           </div>
 
+          {/* Voting Time */}
+          <div>
+            <label htmlFor="setting-voting" className="block font-epilogue font-semibold text-sm mb-2">
+              Answer Reveal &amp; Voting Time (seconds)
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                id="setting-voting"
+                type="range"
+                min={LIMITS.votingTime.min / 1000}
+                max={LIMITS.votingTime.max / 1000}
+                step="5"
+                value={localSettings.votingTime / 1000}
+                onChange={(e) => setLocalSettings({
+                  ...localSettings,
+                  votingTime: Number(e.target.value) * 1000
+                })}
+                className="flex-1"
+              />
+              <span className="font-mono text-sm font-bold w-10 text-center">
+                {localSettings.votingTime / 1000}s
+              </span>
+            </div>
+          </div>
+
           {/* Difficulty */}
           <div>
-            <label className="block font-epilogue font-semibold text-sm mb-2">
+            <span className="block font-epilogue font-semibold text-sm mb-2">
               Category Difficulty
-            </label>
+            </span>
             <div className="grid grid-cols-3 gap-2">
               {(['easy', 'medium', 'hard'] as const).map((diff) => (
                 <button
                   key={diff}
-                  onClick={() => setLocalSettings({
-                    ...localSettings,
-                    difficulty: diff
-                  })}
+                  type="button"
+                  aria-pressed={localSettings.difficulty === diff}
+                  onClick={() => setLocalSettings({ ...localSettings, difficulty: diff })}
                   className={`
                     py-2 px-3 border-[2.5px] border-press-black rounded-[8px]
                     font-anton text-xs tracking-wider uppercase
@@ -162,22 +198,21 @@ export function RoomSettings({
               ))}
             </div>
             <p className="text-xs text-muted mt-2 leading-snug">
-              {localSettings.difficulty === 'easy' && 'Common, straightforward categories'}
-              {localSettings.difficulty === 'medium' && 'Moderately challenging combinations'}
-              {localSettings.difficulty === 'hard' && 'Tricky and creative categories'}
+              {DIFFICULTY_BLURB[localSettings.difficulty]}
             </p>
           </div>
 
           {/* Max Players */}
           <div>
-            <label className="block font-epilogue font-semibold text-sm mb-2">
+            <label htmlFor="setting-players" className="block font-epilogue font-semibold text-sm mb-2">
               Max Players
             </label>
             <div className="flex items-center gap-3">
               <input
+                id="setting-players"
                 type="range"
-                min="2"
-                max="10"
+                min={LIMITS.maxPlayers.min}
+                max={LIMITS.maxPlayers.max}
                 value={localSettings.maxPlayers}
                 onChange={(e) => setLocalSettings({
                   ...localSettings,
@@ -194,14 +229,18 @@ export function RoomSettings({
           {/* Manual Voting Fallback */}
           <div className="flex items-center justify-between">
             <div>
-              <label className="block font-epilogue font-semibold text-sm">
+              <span className="block font-epilogue font-semibold text-sm">
                 Manual Voting Fallback
-              </label>
+              </span>
               <p className="text-xs text-muted mt-1">
-                Allow manual voting if AI validation fails
+                Let players vote when the AI can&apos;t reach a verdict
               </p>
             </div>
             <button
+              type="button"
+              role="switch"
+              aria-checked={localSettings.enableVoting}
+              aria-label="Manual voting fallback"
               onClick={() => setLocalSettings({
                 ...localSettings,
                 enableVoting: !localSettings.enableVoting
@@ -222,18 +261,10 @@ export function RoomSettings({
 
           {/* Save/Cancel Buttons */}
           <div className="flex gap-3 pt-2">
-            <Button
-              variant="ghost"
-              onClick={handleCancel}
-              className="flex-1"
-            >
+            <Button variant="ghost" onClick={handleCancel} className="flex-1">
               Cancel
             </Button>
-            <Button
-              variant="green"
-              onClick={handleSave}
-              className="flex-1"
-            >
+            <Button variant="green" onClick={handleSave} className="flex-1">
               Save Settings
             </Button>
           </div>

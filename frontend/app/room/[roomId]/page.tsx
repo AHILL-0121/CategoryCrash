@@ -1,11 +1,12 @@
 import { GameRoomClient } from '@/components/game/GameRoomClient';
 
-export default async function GameRoomPage({
+// Next 14 passes `params` as a plain object. The previous `Promise<...>`
+// annotation was Next 15 syntax that only happened to work because `await` on a
+// non-promise is a no-op.
+export default function GameRoomPage({
   params,
 }: {
-  params: Promise<{ roomId: string }>;
+  params: { roomId: string };
 }) {
-  const { roomId } = await params;
-
-  return <GameRoomClient roomId={roomId} />;
+  return <GameRoomClient roomId={params.roomId} />;
 }

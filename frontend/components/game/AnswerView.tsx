@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, FormEvent } from 'react';
-import type { Round } from '@/lib/types';
+import type { Player, Round } from '@/lib/types';
+import { LIMITS } from '@/lib/types';
 import { TimerBar } from '../ui/TimerBar';
 
 interface AnswerViewProps {
   round: Round;
-  players: any[];
+  players: Player[];
   onSubmit: (answer: string) => void;
   hasSubmitted: boolean;
   maxRounds?: number;
@@ -23,7 +24,8 @@ export function AnswerView({ round, players, onSubmit, hasSubmitted, maxRounds =
     }
   };
 
-  const submittedCount = players.filter(p => p.hasSubmitted).length;
+  const activePlayers = players.filter(p => p.connected);
+  const submittedCount = activePlayers.filter(p => p.hasSubmitted).length;
 
   return (
     <div className="w-full max-w-[600px] mx-auto px-5 py-10 flex flex-col gap-6">
@@ -80,6 +82,7 @@ export function AnswerView({ round, players, onSubmit, hasSubmitted, maxRounds =
             value={answer}
             onChange={(e) => setAnswer(e.target.value)}
             placeholder="Type your answer here..."
+            maxLength={LIMITS.answerLength}
             autoFocus
             className="
               w-full font-mono text-base font-medium
@@ -127,7 +130,7 @@ export function AnswerView({ round, players, onSubmit, hasSubmitted, maxRounds =
           Players submitted
         </p>
         <div className="flex items-center justify-center gap-2">
-          {players.map((player) => (
+          {activePlayers.map((player) => (
             <div
               key={player.id}
               className={`
@@ -146,7 +149,7 @@ export function AnswerView({ round, players, onSubmit, hasSubmitted, maxRounds =
           ))}
         </div>
         <p className="font-mono text-xs text-muted mt-2">
-          {submittedCount} / {players.length}
+          {submittedCount} / {activePlayers.length}
         </p>
       </div>
     </div>

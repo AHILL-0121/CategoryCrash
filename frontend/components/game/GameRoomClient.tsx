@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useGameRoom } from '@/hooks/useGameRoom';
 import { useToast } from '@/contexts/ToastContext';
@@ -19,8 +19,6 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
   const searchParams = useSearchParams();
   const { showToast } = useToast();
   const playerName = searchParams.get('name') || 'Player';
-  const [error, setError] = useState<string | null>(null);
-  const [showCountdown, setShowCountdown] = useState(false);
   const prevPhaseRef = useRef<string | null>(null);
   const prevRoundPhaseRef = useRef<string | null>(null);
 
@@ -28,53 +26,39 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
     room,
     isConnected,
     myPlayerId,
-    error: serverError,
+    error,
     submitAnswer,
     vote,
     startGame,
-    restartGame,
     updateSettings,
   } = useGameRoom({ roomId, playerName });
 
   useEffect(() => {
-    if (serverError) {
-      setError(serverError);
-      showToast(serverError, 'error');
-      // Clear error after 5 seconds
-      const timer = setTimeout(() => setError(null), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [serverError, showToast]);
+    if (error) showToast(error, 'error');
+  }, [error, showToast]);
 
-  // Handle game phase changes with toasts
+  // Game phase changes
   useEffect(() => {
     if (!room) return;
 
-    // Game started
     if (prevPhaseRef.current === 'lobby' && room.phase === 'playing') {
       showToast('Game started! Get ready! 🎮', 'success');
     }
-
-    // Game finished
     if (prevPhaseRef.current === 'playing' && room.phase === 'finished') {
       showToast('Game Over! Calculating results... 🏆', 'info');
     }
 
     prevPhaseRef.current = room.phase;
-  }, [room?.phase, showToast]);
+  }, [room, showToast]);
 
-  // Handle round phase changes with toasts
+  // Round phase changes
   useEffect(() => {
-    if (!room?.currentRound) return;
+    const roundPhase = room?.currentRound?.phase;
+    if (!roundPhase) return;
 
-    const roundPhase = room.currentRound.phase;
-
-    // Voting phase started
     if (prevRoundPhaseRef.current === 'answering' && roundPhase === 'voting') {
       showToast('Time\'s up! Validating answers... ⏱️', 'info');
     }
-
-    // Scores phase started
     if (prevRoundPhaseRef.current === 'voting' && roundPhase === 'scores') {
       showToast('Round complete! Check the scores 📊', 'success');
     }
@@ -82,41 +66,31 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
     prevRoundPhaseRef.current = roundPhase;
   }, [room?.currentRound?.phase, showToast]);
 
-  // Handle revealing phase countdown
+  // Redirect to results when the game is finished
   useEffect(() => {
-    if (room?.phase === 'playing' && room.currentRound?.phase === 'revealing') {
-      setShowCountdown(true);
-    }
-  }, [room?.phase, room?.currentRound?.phase]);
-
-  // Redirect to results when game is finished
-  useEffect(() => {
-    if (room?.phase === 'finished') {
-      setTimeout(() => {
-        router.push(`/room/${roomId}/results?name=${encodeURIComponent(playerName)}`);
-      }, 3000);
-    }
+    if (room?.phase !== 'finished') return;
+    const timer = setTimeout(() => {
+      router.push(`/room/${roomId}/results?name=${encodeURIComponent(playerName)}`);
+    }, 3000);
+    return () => clearTimeout(timer);
   }, [room?.phase, roomId, playerName, router]);
 
-  // Wrap submitAnswer with toast
   const handleSubmitAnswer = (answer: string) => {
     submitAnswer(answer);
     showToast('Answer locked in! 🔒', 'success');
   };
 
-  // Wrap vote with toast
   const handleVote = (targetPlayerId: string, valid: boolean) => {
     vote(targetPlayerId, valid);
     showToast(valid ? 'Voted valid ✓' : 'Voted invalid ✕', 'info');
   };
 
-  // Wrap startGame with toast
   const handleStartGame = () => {
     startGame();
     showToast('Starting game...', 'info');
   };
 
-  if (!isConnected || !room) {
+  if (!room) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
@@ -142,6 +116,13 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
 
   return (
     <main className="min-h-screen">
+      {/* Reconnect banner — the seat is held server-side while this shows. */}
+      {!isConnected && (
+        <div className="fixed top-4 left-4 right-4 max-w-sm mx-auto bg-coral text-press-black px-4 py-3 rounded border-2 border-press-black shadow-brutal z-50">
+          <p className="font-mono text-sm">Connection lost — reconnecting…</p>
+        </div>
+      )}
+
       {/* Error display */}
       {error && (
         <div className="fixed top-4 left-4 right-4 max-w-sm mx-auto bg-crash-red text-white px-4 py-3 rounded border-2 border-press-black shadow-brutal z-50">
@@ -162,13 +143,15 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
       {/* Playing Phase */}
       {room.phase === 'playing' && room.currentRound && (
         <>
-          {/* Revealing/Countdown Phase */}
-          {showCountdown && room.currentRound.phase === 'revealing' && (
+          {/* Revealing Phase — driven purely by the server's phase, so the
+              categories stay on screen for the whole reveal window. */}
+          {room.currentRound.phase === 'revealing' && (
             <CountdownScreen
+              key={room.currentRound.number}
               roundNumber={room.currentRound.number}
               categories={room.currentRound.categories}
-              onComplete={() => setShowCountdown(false)}
               maxRounds={room.maxRounds}
+              revealTime={room.settings.revealTime}
             />
           )}
 
@@ -190,6 +173,7 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
               players={room.players}
               myPlayerId={myPlayerId}
               onVote={handleVote}
+              enableVoting={room.settings.enableVoting}
             />
           )}
 
@@ -197,7 +181,8 @@ export function GameRoomClient({ roomId }: GameRoomClientProps) {
           {room.currentRound.phase === 'scores' && (
             <ScoreView
               players={Object.values(room.players)}
-              roundNumber={room.currentRound.number}
+              round={room.currentRound}
+              maxRounds={room.maxRounds}
             />
           )}
         </>

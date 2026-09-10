@@ -1,48 +1,16 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useGameRoom } from '@/hooks/useGameRoom';
 import { useToast } from '@/contexts/ToastContext';
 import { Button } from '@/components/ui/Button';
 import { PlayerCard } from '@/components/ui/PlayerCard';
-import type { Round } from '@/lib/types';
+import { getRoundWinner } from '@/lib/rounds';
 
 type ResultsClientProps = {
   roomId: string;
 };
-
-// Helper to get round winner from round data
-function getRoundWinner(round: Round, players: Record<string, { id: string; name: string }>) {
-  const answers = Object.entries(round.answers)
-    .map(([playerId, answer]) => ({
-      playerId,
-      playerName: players[playerId]?.name || 'Unknown',
-      ...answer,
-    }))
-    .sort((a, b) => a.submittedAt - b.submittedAt);
-
-  // Find first valid answer (that's the round winner)
-  for (const answer of answers) {
-    const isValid = answer.aiValidation?.valid !== false;
-    if (isValid) {
-      return {
-        name: answer.playerName,
-        answer: answer.text,
-      };
-    }
-  }
-
-  // If no valid answers, return first submitter
-  if (answers.length > 0) {
-    return {
-      name: answers[0].playerName,
-      answer: answers[0].text,
-      invalid: true,
-    };
-  }
-
-  return null;
-}
 
 export function ResultsClient({ roomId }: ResultsClientProps) {
   const router = useRouter();
@@ -51,6 +19,13 @@ export function ResultsClient({ roomId }: ResultsClientProps) {
   const playerName = searchParams.get('name') || 'Player';
 
   const { room, myPlayerId, restartGame } = useGameRoom({ roomId, playerName });
+
+  // The host's restart flips the server room back to `lobby`. Without following
+  // it, every player sits on a stale results page while a fresh lobby waits.
+  useEffect(() => {
+    if (room?.phase !== 'lobby') return;
+    router.push(`/room/${roomId}?name=${encodeURIComponent(playerName)}`);
+  }, [room?.phase, roomId, playerName, router]);
 
   const handlePlayAgain = () => {
     restartGame();
@@ -153,7 +128,7 @@ export function ResultsClient({ roomId }: ResultsClientProps) {
             </div>
             <div className="divide-y-[1.5px] divide-press-black/10">
               {roundHistory.map((round) => {
-                const roundWinner = getRoundWinner(round, room.players);
+                const roundWinner = getRoundWinner(round, room.players, room.settings.enableVoting);
                 return (
                   <div key={round.number} className="px-5 py-3">
                     <div className="flex items-center justify-between mb-1">
@@ -171,7 +146,7 @@ export function ResultsClient({ roomId }: ResultsClientProps) {
                     </div>
                     {roundWinner && (
                       <div className={`font-mono text-sm ${roundWinner.invalid ? 'text-crash-red/70' : 'text-volt-green'}`}>
-                        "{roundWinner.answer}"
+                        &ldquo;{roundWinner.answer}&rdquo;
                       </div>
                     )}
                   </div>

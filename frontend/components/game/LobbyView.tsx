@@ -85,10 +85,6 @@ export function LobbyView({ room, myPlayerId, onStartGame, onUpdateSettings }: L
         maxRounds={room.maxRounds}
         isHost={room.players[myPlayerId || '']?.isHost || false}
         onUpdateSettings={onUpdateSettings}
-        onUpdateMaxRounds={(maxRounds) => {
-          // We'll need to update server to handle maxRounds separately
-          // For now, we could store it in settings as a workaround
-        }}
       />
 
       {/* How to play */}
@@ -103,7 +99,7 @@ export function LobbyView({ room, myPlayerId, onStartGame, onUpdateSettings }: L
         <div className="flex-1 min-w-[110px] text-center">
           <div className="font-anton text-3xl leading-none text-crash-red">2</div>
           <p className="text-xs text-muted mt-1 leading-snug">
-            Vote on other players' answers
+            Vote on other players&rsquo; answers
           </p>
         </div>
         <div className="font-anton text-xl text-ink-gray self-center pt-1.5">→</div>

@@ -215,7 +215,7 @@ export default function HomePage() {
               <h3 className="font-anton text-sm text-crash-red mb-1.5">OBJECTIVE</h3>
               <p className="text-xs text-muted leading-relaxed">
                 Each round shows TWO categories. Find a single answer that fits BOTH categories.
-                Example: "Tomato" fits both "Things that are RED" and "Found in Kitchen".
+                Example: &ldquo;Tomato&rdquo; fits both &ldquo;Things that are RED&rdquo; and &ldquo;Found in Kitchen&rdquo;.
               </p>
             </div>
 

@@ -1,17 +1,22 @@
 'use client';
 
-import type { Player } from '@/lib/types';
+import type { Player, Round } from '@/lib/types';
+import { getRoundWinner } from '@/lib/rounds';
 import { PlayerCard } from '../ui/PlayerCard';
 
 interface ScoreViewProps {
   players: Player[];
-  roundNumber: number;
+  round: Round;
+  maxRounds: number;
 }
 
-export function ScoreView({ players, roundNumber }: ScoreViewProps) {
-  // Sort by score
+export function ScoreView({ players, round, maxRounds }: ScoreViewProps) {
   const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
-  const winner = sortedPlayers[0];
+
+  // The winner OF THIS ROUND — the fastest valid answer — not whoever happens to
+  // top the cumulative leaderboard.
+  const playerLookup = Object.fromEntries(players.map(p => [p.id, p]));
+  const roundWinner = getRoundWinner(round, playerLookup);
 
   return (
     <div className="w-full max-w-[600px] mx-auto px-5 py-10 flex flex-col gap-6">
@@ -25,21 +30,32 @@ export function ScoreView({ players, roundNumber }: ScoreViewProps) {
           />
         </div>
         <h2 className="font-anton text-4xl text-press-black mb-2">
-          ROUND {roundNumber} COMPLETE
+          ROUND {round.number} COMPLETE
         </h2>
         <p className="font-mono text-sm text-muted">
-          Next round starting soon...
+          {round.number >= maxRounds ? 'Final results coming up...' : 'Next round starting soon...'}
         </p>
       </div>
 
       {/* Round winner */}
-      {winner && (
+      {roundWinner && !roundWinner.invalid && (
         <div className="text-center py-6 bg-crash-red/10 border-[2.5px] border-crash-red rounded-[16px]">
           <div className="font-anton text-sm tracking-widest uppercase text-muted mb-2">
             Round Winner
           </div>
           <div className="font-anton text-3xl text-crash-red">
-            {winner.name}
+            {roundWinner.name}
+          </div>
+          <div className="font-mono text-sm text-muted mt-1">
+            &ldquo;{roundWinner.answer}&rdquo;
+          </div>
+        </div>
+      )}
+
+      {roundWinner?.invalid && (
+        <div className="text-center py-6 bg-newsprint border-[2.5px] border-press-black rounded-[16px]">
+          <div className="font-anton text-sm tracking-widest uppercase text-muted">
+            No valid answers this round
           </div>
         </div>
       )}
@@ -51,7 +67,7 @@ export function ScoreView({ players, roundNumber }: ScoreViewProps) {
             Leaderboard
           </h3>
           <span className="font-mono text-xs text-muted">
-            After Round {roundNumber}
+            After Round {round.number} of {maxRounds}
           </span>
         </div>
         <div>

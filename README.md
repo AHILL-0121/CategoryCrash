@@ -13,35 +13,33 @@ Each round presents TWO categories simultaneously. Players must find a single an
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18+
-- npm or yarn
+- Node.js 22.6+ (the test runner uses native TypeScript type-stripping)
+- npm
 - Groq API key (for AI validation)
 
 ### Installation
 
-```bash
-# Install dependencies
-npm install
+All application code lives in `frontend/` — there is no root package manifest, so
+every command below runs from that directory.
 
-# Set up environment variables
+```bash
+cd frontend
+npm install
 cp .env.local.example .env.local
 ```
 
-Edit `.env.local`:
-```env
-NEXT_PUBLIC_PARTYKIT_HOST=localhost:1999
-GROQ_API_KEY=your_groq_api_key_here
-```
+Then fill in `.env.local` — see [Environment variables](#-environment-variables).
+At minimum you need `GROQ_API_KEY`.
 
 ### Development
 
-Run both servers in separate terminals:
+Run both servers in separate terminals, both from `frontend/`:
 
 ```bash
-# Terminal 1: Start PartyKit server
+# Terminal 1: PartyKit (WebSocket game server) on :1999
 npm run partykit:dev
 
-# Terminal 2: Start Next.js dev server
+# Terminal 2: Next.js (UI + AI API routes) on :3000
 npm run dev
 ```
 
@@ -59,27 +57,32 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 🏆 Scoring System
 
+Speed bonuses are ranked among **valid answers only** — an invalid answer never
+occupies a scoring slot, so being fast and wrong does not push a correct answer
+down the ranking.
+
 | Event | Points |
 |-------|--------|
-| 1st valid answer | 500 |
-| 2nd valid answer | 400 |
+| Fastest valid answer | 500 |
+| 2nd fastest valid answer | 400 |
 | 3rd+ valid answer | 300 |
 | Unique answer bonus | +100 |
 | Invalid answer | 0 |
 
 **Pro Tips:**
-- Speed matters! First valid submission gets the most points
+- Speed matters! The first *valid* submission gets the most points
 - Creative answers are more likely to be unique (+100 bonus)
 - Invalid answers (AI validated) score nothing
 
 ## ✨ Features
 
-- **125 Category Pairs** - Diverse combinations across colors, animals, food, geography, sports, jobs, and more
-- **AI Validation** - Groq-powered answer validation using llama-3.3-70b
-- **Real-time Multiplayer** - WebSocket-based gameplay via PartyKit
-- **Toast Notifications** - Instant feedback for all game actions
-- **Round-by-Round Results** - See who won each round and their winning answers
-- **Customizable Settings** - Adjust rounds (3-15), time limits, and difficulty
+- **125 Category Pairs** — across colors, animals, food, geography, sports, jobs, and more, each tagged easy / medium / hard
+- **AI Validation** — Groq-powered, in two tiers: an exact match against a pre-fetched answer list is instant, and anything else is escalated to a strict AI judge
+- **Real-time Multiplayer** — WebSocket-based gameplay via PartyKit
+- **Reconnect-safe** — a refresh or a dropped connection keeps your seat, score and submitted answer
+- **Toast Notifications** — instant feedback for all game actions
+- **Round-by-Round Results** — the winner of each round is the fastest valid answer
+- **Customizable Settings** — rounds (3–15), answer time, reveal time, voting time, difficulty, max players, and the manual-voting fallback
 
 ## 📦 Project Structure
 
@@ -87,18 +90,23 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 frontend/
 ├── app/                    # Next.js App Router
 │   ├── page.tsx           # Landing page with rules
-│   ├── layout.tsx         # Root layout
+│   ├── layout.tsx         # Root layout (fonts, metadata)
 │   ├── globals.css        # Global styles
 │   ├── room/[roomId]/     # Game room & results pages
-│   └── api/               # API routes (room create, AI validation)
+│   └── api/               # Room creation + the two AI routes
 ├── components/
 │   ├── game/              # Game views (Lobby, Answer, Voting, Score, Results)
 │   └── ui/                # Reusable UI components
 ├── contexts/              # React contexts (Toast)
-├── hooks/                 # Custom hooks (useGameRoom)
-├── lib/                   # Utilities & types
-├── party/                 # PartyKit server
-│   └── index.ts          # Real-time game logic & AI integration
+├── hooks/                 # Custom hooks (useGameRoom, useCountdown)
+├── lib/                   # Shared logic
+│   ├── answer-matching.ts # Normalisation + conservative answer matching
+│   ├── rounds.ts          # Round validity / round-winner rules
+│   ├── ai-support.ts      # AI route auth, CORS, usage logging
+│   └── types.ts           # Shared types + setting bounds
+├── party/
+│   └── index.ts           # PartyKit server: game logic, AI validation, scoring
+├── tests/                 # node:test suites
 ├── public/                # Static assets (logos, icons)
 └── partykit.json          # PartyKit configuration
 ```
@@ -108,37 +116,62 @@ frontend/
 - **Frontend**: Next.js 14 (App Router), React 18, TypeScript
 - **Styling**: Tailwind CSS (Neobrutalism design)
 - **Real-time**: PartyKit (WebSockets)
-- **AI**: Groq API (llama-3.3-70b-versatile)
-- **Fonts**: Anton, Epilogue, DM Mono
+- **AI**: Groq API (openai/gpt-oss-120b)
+- **Fonts**: Anton, Epilogue, DM Mono (self-hosted via `next/font`)
+- **Tests**: `node:test` (no test-framework dependency)
 - **Deployment**: Vercel (frontend) + PartyKit (WebSockets)
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────┐         WebSocket         ┌──────────────┐
-│  Next.js    │ ◄──────────────────────► │   PartyKit   │
+│  Next.js    │ ◄──────────────────────►  │   PartyKit   │
 │  Frontend   │      (partysocket)        │    Server    │
 └─────────────┘                           └──────────────┘
        │                                         │
-       │  HTTP                                   │ AI Validation
-       ▼                                         ▼
-┌─────────────┐                           ┌──────────────┐
-│  API Routes │                           │   Groq API   │
-│  /api/*     │                           │  (LLM)       │
-└─────────────┘                           └──────────────┘
+       │  HTTP                                   │ PARTYKIT_BACKEND_URL
+       ▼                                         │ + x-internal-key
+┌─────────────┐                                  │
+│  API Routes │ ◄────────────────────────────────┘
+│  /api/*     │
+└──────┬──────┘
+       │ GROQ_API_KEY
+       ▼
+┌──────────────┐
+│   Groq API   │
+│    (LLM)     │
+└──────────────┘
 ```
+
+The AI routes are called by the **PartyKit server**, not by the browser. They
+spend Groq tokens on every request, so they are protected by a shared secret.
 
 ## 🎮 Game Flow
 
 1. **Lobby** → Players join, host configures settings
-2. **Revealing** → Categories appear (3s countdown)
+2. **Revealing** → Categories appear (configurable, default 5s)
 3. **Answering** → Type your answer (configurable, default 20s)
-4. **Voting** → AI validates + optional manual voting (15s)
-5. **Scores** → See round results (5s)
-6. **Repeat** → Continue for configured rounds (default 10)
+4. **Voting** → Answers are revealed with their AI verdicts (default 15s). Manual voting appears only for answers the AI could not judge, and only if the host left the fallback enabled
+5. **Scores** → See the round winner and the leaderboard (5s)
+6. **Repeat** → Continue for the configured rounds (default 10)
 7. **Results** → Final standings, winner, and round-by-round breakdown
 
+## 🔑 Environment variables
+
+Copy `frontend/.env.local.example` to `frontend/.env.local`.
+
+| Variable | Used by | Required | Purpose |
+|---|---|---|---|
+| `NEXT_PUBLIC_PARTYKIT_HOST` | browser | yes | PartyKit host to connect to |
+| `NEXT_PUBLIC_SITE_URL` | Next build | production | `metadataBase` for Open Graph / Twitter share images |
+| `GROQ_API_KEY` | Next API routes | yes | Groq authentication |
+| `INTERNAL_API_SECRET` | Next + PartyKit | **production** | Shared secret for the AI routes. Without it they return `503` in production |
+| `ALLOWED_ORIGINS` | Next API routes | no | Comma-separated browser origins allowed to call the AI routes |
+| `PARTYKIT_BACKEND_URL` | PartyKit | **production** | Where the worker reaches the Next.js API. Defaults to `http://localhost:3000`, which does not exist once deployed — **AI validation silently no-ops if this is unset** |
+
 ## 🔧 Available Scripts
+
+Run from `frontend/`:
 
 ```bash
 # Development
@@ -150,29 +183,41 @@ npm run build            # Build for production
 npm run start            # Start production server
 npm run partykit:deploy  # Deploy PartyKit
 
-# Utilities
+# Quality
+npm test                 # Run the node:test suites
 npm run lint             # Run ESLint
 ```
 
 ## 🚀 Deployment
 
-### 1. Deploy PartyKit
+### 1. Deploy Next.js to Vercel
 
 ```bash
-npm run partykit:deploy
-```
-
-You'll get a URL like: `https://categorycrash.<username>.partykit.dev`
-
-### 2. Deploy Next.js to Vercel
-
-```bash
+cd frontend
 vercel
 ```
 
 Set environment variables in Vercel:
-- `NEXT_PUBLIC_PARTYKIT_HOST` = your PartyKit URL
-- `GROQ_API_KEY` = your Groq API key
+- `NEXT_PUBLIC_PARTYKIT_HOST` — your PartyKit URL
+- `NEXT_PUBLIC_SITE_URL` — your deployed site URL
+- `GROQ_API_KEY` — your Groq API key
+- `INTERNAL_API_SECRET` — generate with `openssl rand -hex 32`
+- `ALLOWED_ORIGINS` — your deployed site URL
+
+### 2. Deploy PartyKit
+
+PartyKit must know how to reach the deployed API, and must present the same
+secret:
+
+```bash
+cd frontend
+npm run partykit:deploy -- \
+  --var PARTYKIT_BACKEND_URL=https://your-app.vercel.app \
+  --var INTERNAL_API_SECRET=<the same secret>
+```
+
+You'll get a URL like: `https://categorycrash.<username>.partykit.dev` — put it
+in Vercel as `NEXT_PUBLIC_PARTYKIT_HOST` and redeploy.
 
 ## 🎨 Design System
 
