@@ -37,6 +37,8 @@ export function useGameRoom({
 
   const socket = usePartySocket({
     host: partyHost,
+    // partyserver routes by Durable Object binding name (kebab-cased).
+    party: 'category-crash-room',
     room: roomId,
     onMessage: (evt) => {
       try {

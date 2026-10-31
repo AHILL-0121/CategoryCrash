@@ -36,8 +36,8 @@ At minimum you need `GROQ_API_KEY`.
 Run both servers in separate terminals, both from `frontend/`:
 
 ```bash
-# Terminal 1: PartyKit (WebSocket game server) on :1999
-npm run partykit:dev
+# Terminal 1: Cloudflare Worker (WebSocket game server, wrangler dev) on :1999
+npm run party:dev
 
 # Terminal 2: Next.js (UI + AI API routes) on :3000
 npm run dev
@@ -105,21 +105,22 @@ frontend/
 │   ├── ai-support.ts      # AI route auth, CORS, usage logging
 │   └── types.ts           # Shared types + setting bounds
 ├── party/
-│   └── index.ts           # PartyKit server: game logic, AI validation, scoring
+│   ├── index.ts           # Game room (partyserver): logic, AI validation, scoring
+│   └── worker.ts          # Worker entry point / routing
 ├── tests/                 # node:test suites
 ├── public/                # Static assets (logos, icons)
-└── partykit.json          # PartyKit configuration
+└── wrangler.jsonc         # Cloudflare Worker + Durable Object config
 ```
 
 ## 🎨 Tech Stack
 
 - **Frontend**: Next.js 14 (App Router), React 18, TypeScript
 - **Styling**: Tailwind CSS (Neobrutalism design)
-- **Real-time**: PartyKit (WebSockets)
+- **Real-time**: Cloudflare Workers + Durable Objects via partyserver (WebSockets)
 - **AI**: Groq API (openai/gpt-oss-120b)
 - **Fonts**: Anton, Epilogue, DM Mono (self-hosted via `next/font`)
 - **Tests**: `node:test` (no test-framework dependency)
-- **Deployment**: Vercel (frontend) + PartyKit (WebSockets)
+- **Deployment**: Vercel (frontend) + Cloudflare Workers (WebSockets)
 
 ## 🏗️ Architecture
 
@@ -129,7 +130,7 @@ frontend/
 │  Frontend   │      (partysocket)        │    Server    │
 └─────────────┘                           └──────────────┘
        │                                         │
-       │  HTTP                                   │ PARTYKIT_BACKEND_URL
+       │  HTTP                                   │ BACKEND_URL
        ▼                                         │ + x-internal-key
 ┌─────────────┐                                  │
 │  API Routes │ ◄────────────────────────────────┘
@@ -167,7 +168,7 @@ Copy `frontend/.env.local.example` to `frontend/.env.local`.
 | `GROQ_API_KEY` | Next API routes | yes | Groq authentication |
 | `INTERNAL_API_SECRET` | Next + PartyKit | **production** | Shared secret for the AI routes. Without it they return `503` in production |
 | `ALLOWED_ORIGINS` | Next API routes | no | Comma-separated browser origins allowed to call the AI routes |
-| `PARTYKIT_BACKEND_URL` | PartyKit | **production** | Where the worker reaches the Next.js API. Defaults to `http://localhost:3000`, which does not exist once deployed — **AI validation silently no-ops if this is unset** |
+| `BACKEND_URL` | PartyKit | **production** | Where the worker reaches the Next.js API. Defaults to `http://localhost:3000`, which does not exist once deployed — **AI validation silently no-ops if this is unset** |
 
 ## 🔧 Available Scripts
 
@@ -176,12 +177,12 @@ Run from `frontend/`:
 ```bash
 # Development
 npm run dev              # Start Next.js dev server
-npm run partykit:dev     # Start PartyKit dev server
+npm run party:dev        # Start Worker dev server (port 1999)
 
 # Production
 npm run build            # Build for production
 npm run start            # Start production server
-npm run partykit:deploy  # Deploy PartyKit
+npm run party:deploy     # Deploy Worker (wrangler deploy)
 
 # Quality
 npm test                 # Run the node:test suites
@@ -204,20 +205,21 @@ Set environment variables in Vercel:
 - `INTERNAL_API_SECRET` — generate with `openssl rand -hex 32`
 - `ALLOWED_ORIGINS` — your deployed site URL
 
-### 2. Deploy PartyKit
+### 2. Deploy the Worker (Cloudflare)
 
-PartyKit must know how to reach the deployed API, and must present the same
+The Worker must know how to reach the deployed API, and must present the same
 secret:
 
 ```bash
 cd frontend
-npm run partykit:deploy -- \
-  --var PARTYKIT_BACKEND_URL=https://your-app.vercel.app \
-  --var INTERNAL_API_SECRET=<the same secret>
+npx wrangler login
+npx wrangler secret put INTERNAL_API_SECRET        # same value as on Vercel
+npm run party:deploy -- --var BACKEND_URL:https://your-app.vercel.app
 ```
 
-You'll get a URL like: `https://categorycrash.<username>.partykit.dev` — put it
-in Vercel as `NEXT_PUBLIC_PARTYKIT_HOST` and redeploy.
+You'll get a URL like `https://categorycrash.<subdomain>.workers.dev` — put the
+host (no `https://`) in Vercel as `NEXT_PUBLIC_PARTYKIT_HOST` and redeploy.
+Clients connect to `/parties/category-crash-room/<roomId>`.
 
 ## 🎨 Design System
 

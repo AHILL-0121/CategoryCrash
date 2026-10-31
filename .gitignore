@@ -38,6 +38,8 @@ next-env.d.ts
 
 # PartyKit
 .partykit/
+.wrangler/
+.dev.vars
 
 # Logs
 logs/

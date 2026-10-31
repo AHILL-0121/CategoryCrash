@@ -1,5 +1,5 @@
-import type * as Party from 'partykit/server';
-// Relative, not aliased: the PartyKit bundler does not read tsconfig paths.
+import { Server, type Connection } from 'partyserver';
+// Relative, not aliased: the Worker bundler does not read tsconfig paths.
 import { matchesKnownAnswer, tokenize, uniquenessKey } from '../lib/answer-matching';
 
 // ─── Type Definitions ───
@@ -245,16 +245,24 @@ const categoryPairs: CategoryPair[] = [
 ];
 
 // ─── PartyKit Server ───
-export default class CategoryCrashRoom implements Party.Server {
+export interface Env {
+  CategoryCrashRoom: DurableObjectNamespace;
+  /** Base URL of the Next.js app (e.g. https://your-app.vercel.app). */
+  BACKEND_URL?: string;
+  INTERNAL_API_SECRET?: string;
+}
+
+export class CategoryCrashRoom extends Server<Env> {
   room: GameRoom;
   timer: ReturnType<typeof setTimeout> | null = null;
   categories: [string, string][] = [];
   /** Sliding-window message counters, keyed by connection id. */
   private rateWindows = new Map<string, { count: number; startedAt: number }>();
 
-  constructor(public party: Party.Room) {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
     this.room = {
-      id: party.id,
+      id: '', // filled in onStart, once the room name is known
       players: {},
       currentRound: null,
       roundHistory: [],
@@ -270,8 +278,9 @@ export default class CategoryCrashRoom implements Party.Server {
   // Without this, a hibernation or a worker restart silently destroys every
   // in-flight game. Players re-attach to the restored state by name.
   async onStart(): Promise<void> {
+    this.room.id = this.name;
     try {
-      const saved = await this.party.storage.get<{ room: GameRoom; categories: [string, string][] }>('state');
+      const saved = await this.ctx.storage.get<{ room: GameRoom; categories: [string, string][] }>('state');
       if (!saved?.room) return;
 
       this.room = saved.room;
@@ -286,13 +295,13 @@ export default class CategoryCrashRoom implements Party.Server {
 
   private async saveState(): Promise<void> {
     try {
-      await this.party.storage.put('state', { room: this.room, categories: this.categories });
+      await this.ctx.storage.put('state', { room: this.room, categories: this.categories });
     } catch (err) {
       console.error('[STATE] Failed to persist:', err);
     }
   }
 
-  onConnect(conn: Party.Connection): void {
+  onConnect(conn: Connection): void {
     console.log(`Connection ${conn.id} connected`);
 
     // Tell the client its own connection id so it never has to guess its
@@ -301,7 +310,10 @@ export default class CategoryCrashRoom implements Party.Server {
     this.sendTo(conn, { type: 'room:state', data: this.room });
   }
 
-  onMessage(message: string, sender: Party.Connection): void {
+  onMessage(sender: Connection, rawMessage: string | ArrayBuffer | ArrayBufferView): void {
+    // partyserver passes (connection, message) — the reverse of PartyKit.
+    if (typeof rawMessage !== 'string') return this.sendError(sender, 'Invalid message format');
+    const message = rawMessage;
     if (!this.allowMessage(sender)) {
       return this.sendError(sender, 'Slow down — too many requests');
     }
@@ -349,14 +361,14 @@ export default class CategoryCrashRoom implements Party.Server {
     }
   }
 
-  onClose(conn: Party.Connection): void {
+  onClose(conn: Connection): void {
     console.log(`Connection ${conn.id} disconnected`);
     this.rateWindows.delete(conn.id);
     this.handlePlayerLeave(conn);
   }
 
   /** Simple per-connection sliding window. */
-  private allowMessage(conn: Party.Connection): boolean {
+  private allowMessage(conn: Connection): boolean {
     const now = Date.now();
     const window = this.rateWindows.get(conn.id);
 
@@ -369,7 +381,7 @@ export default class CategoryCrashRoom implements Party.Server {
   }
 
   // ─── Player Join ───
-  handlePlayerJoin(conn: Party.Connection, data: unknown): void {
+  handlePlayerJoin(conn: Connection, data: unknown): void {
     const rawName = typeof (data as any)?.name === 'string' ? (data as any).name : '';
     const name = rawName.trim().slice(0, LIMITS.nameLength);
     if (!name) return this.sendError(conn, 'Please enter a name');
@@ -403,7 +415,7 @@ export default class CategoryCrashRoom implements Party.Server {
       }
 
       console.log(`Player ${name} reconnected (${oldId} → ${conn.id})`);
-      this.broadcast({ type: 'room:state', data: this.room });
+      this.broadcastJson({ type: 'room:state', data: this.room });
       void this.saveState();
       return;
     }
@@ -429,12 +441,12 @@ export default class CategoryCrashRoom implements Party.Server {
       connected: true,
     };
 
-    this.broadcast({ type: 'room:state', data: this.room });
+    this.broadcastJson({ type: 'room:state', data: this.room });
     void this.saveState();
   }
 
   private isConnectionLive(id: string): boolean {
-    return this.party.getConnection(id) !== undefined;
+    return this.getConnection(id) !== undefined;
   }
 
   /** Two players called "Alex" would otherwise be indistinguishable. */
@@ -450,7 +462,7 @@ export default class CategoryCrashRoom implements Party.Server {
   }
 
   // ─── Settings Update ───
-  handleSettingsUpdate(conn: Party.Connection, data: unknown): void {
+  handleSettingsUpdate(conn: Connection, data: unknown): void {
     const player = this.room.players[conn.id];
     if (!player?.isHost) return this.sendError(conn, 'Only host can update settings');
     if (this.room.phase !== 'lobby') return this.sendError(conn, 'Cannot change settings during game');
@@ -490,7 +502,7 @@ export default class CategoryCrashRoom implements Party.Server {
       `difficulty=${next.difficulty}, revealTime=${next.revealTime}, votingTime=${next.votingTime}`
     );
 
-    this.broadcast({ type: 'room:state', data: this.room });
+    this.broadcastJson({ type: 'room:state', data: this.room });
     void this.saveState();
   }
 
@@ -506,7 +518,7 @@ export default class CategoryCrashRoom implements Party.Server {
   }
 
   // ─── Game Start ───
-  handleGameStart(conn: Party.Connection): void {
+  handleGameStart(conn: Connection): void {
     const player = this.room.players[conn.id];
     if (!player?.isHost) return this.sendError(conn, 'Only host can start the game');
     if (Object.keys(this.room.players).length < 2) {
@@ -544,7 +556,7 @@ export default class CategoryCrashRoom implements Party.Server {
     };
 
     this.room.currentRound = round;
-    this.broadcast({ type: 'round:start', data: round });
+    this.broadcastJson({ type: 'round:start', data: round });
     void this.saveState();
 
     // Fire-and-forget; the result is only needed once answering ends.
@@ -570,7 +582,7 @@ export default class CategoryCrashRoom implements Party.Server {
         return;
       }
 
-      const data = await response.json();
+      const data = await response.json() as any;
 
       // Guard against round drift: a slow response must never overwrite a newer
       // round's answer list, which would invalidate every correct answer.
@@ -593,10 +605,10 @@ export default class CategoryCrashRoom implements Party.Server {
 
   /** Single place that knows how to reach the Next.js API. */
   private callBackend(path: string, body: unknown): Promise<Response> {
-    const apiUrl = process.env.PARTYKIT_BACKEND_URL || 'http://localhost:3000';
+    const apiUrl = this.env.BACKEND_URL || 'http://localhost:3000';
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (process.env.INTERNAL_API_SECRET) {
-      headers['x-internal-key'] = process.env.INTERNAL_API_SECRET;
+    if (this.env.INTERNAL_API_SECRET) {
+      headers['x-internal-key'] = this.env.INTERNAL_API_SECRET;
     }
     return fetch(`${apiUrl}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
   }
@@ -606,13 +618,13 @@ export default class CategoryCrashRoom implements Party.Server {
     if (!this.room.currentRound) return;
 
     this.room.currentRound.phase = 'answering';
-    this.broadcast({ type: 'round:phase', data: { phase: 'answering' } });
+    this.broadcastJson({ type: 'round:phase', data: { phase: 'answering' } });
 
     this.setPhaseTimer(() => void this.transitionToVoting(), this.room.settings.timeLimit);
   }
 
   // ─── Handle Answer Submit ───
-  handleAnswerSubmit(conn: Party.Connection, data: unknown): void {
+  handleAnswerSubmit(conn: Connection, data: unknown): void {
     const player = this.room.players[conn.id];
     if (!player || player.hasSubmitted) return;
 
@@ -638,7 +650,7 @@ export default class CategoryCrashRoom implements Party.Server {
       votes: {},
     };
 
-    this.broadcast({ type: 'answer:locked', data: { playerId: conn.id } });
+    this.broadcastJson({ type: 'answer:locked', data: { playerId: conn.id } });
 
     const active = Object.values(this.room.players).filter(p => p.connected);
     if (active.length > 0 && active.every(p => p.hasSubmitted)) {
@@ -654,15 +666,15 @@ export default class CategoryCrashRoom implements Party.Server {
     round.phase = 'voting';
     const roundNumber = round.number;
 
-    this.broadcast({ type: 'round:phase', data: { phase: 'voting' } });
-    this.broadcast({ type: 'round:reveal', data: { answers: round.answers } });
+    this.broadcastJson({ type: 'round:phase', data: { phase: 'voting' } });
+    this.broadcastJson({ type: 'round:reveal', data: { answers: round.answers } });
 
     this.setPhaseTimer(() => this.transitionToScores(), this.room.settings.votingTime);
 
     // Judge asynchronously, then push the verdicts to everyone.
     await this.validateAllAnswers(roundNumber);
     if (this.room.currentRound?.number === roundNumber) {
-      this.broadcast({ type: 'round:reveal', data: { answers: this.room.currentRound.answers } });
+      this.broadcastJson({ type: 'round:reveal', data: { answers: this.room.currentRound.answers } });
       void this.saveState();
     }
   }
@@ -722,7 +734,7 @@ export default class CategoryCrashRoom implements Party.Server {
       const response = await this.callBackend('/api/validate-answer', { answer, category1, category2 });
       if (!response.ok) return null;
 
-      const data = await response.json();
+      const data = await response.json() as any;
       if (typeof data?.valid !== 'boolean') return null;
 
       return {
@@ -740,7 +752,7 @@ export default class CategoryCrashRoom implements Party.Server {
   }
 
   // ─── Handle Vote Submit ───
-  handleVoteSubmit(conn: Party.Connection, data: unknown): void {
+  handleVoteSubmit(conn: Connection, data: unknown): void {
     const round = this.room.currentRound;
     if (!round || round.phase !== 'voting') return;
     if (!this.room.settings.enableVoting) return;
@@ -773,8 +785,8 @@ export default class CategoryCrashRoom implements Party.Server {
     round.phase = 'scores';
     this.calculateScores();
 
-    this.broadcast({ type: 'round:phase', data: { phase: 'scores' } });
-    this.broadcast({
+    this.broadcastJson({ type: 'round:phase', data: { phase: 'scores' } });
+    this.broadcastJson({
       type: 'round:scores',
       data: { players: Object.values(this.room.players), answers: round.answers },
     });
@@ -839,7 +851,7 @@ export default class CategoryCrashRoom implements Party.Server {
     this.room.phase = 'finished';
     this.room.currentRound = null;
 
-    this.broadcast({
+    this.broadcastJson({
       type: 'game:over',
       data: {
         leaderboard: Object.values(this.room.players).sort((a, b) => b.score - a.score),
@@ -850,7 +862,7 @@ export default class CategoryCrashRoom implements Party.Server {
   }
 
   // ─── Game Restart ───
-  handleGameRestart(conn: Party.Connection): void {
+  handleGameRestart(conn: Connection): void {
     const player = this.room.players[conn.id];
     if (!player?.isHost) return this.sendError(conn, 'Only host can restart');
 
@@ -870,12 +882,12 @@ export default class CategoryCrashRoom implements Party.Server {
     this.room.roundHistory = [];
     this.categories = this.pickCategories(this.room.settings.difficulty, LIMITS.maxRounds.max);
 
-    this.broadcast({ type: 'room:state', data: this.room });
+    this.broadcastJson({ type: 'room:state', data: this.room });
     void this.saveState();
   }
 
   // ─── Player Leave ───
-  handlePlayerLeave(conn: Party.Connection): void {
+  handlePlayerLeave(conn: Connection): void {
     const player = this.room.players[conn.id];
     if (!player) return;
 
@@ -889,11 +901,11 @@ export default class CategoryCrashRoom implements Party.Server {
         if (nextPlayer) nextPlayer.isHost = true;
       }
 
-      this.broadcast({ type: 'player:left', data: { id: conn.id } });
+      this.broadcastJson({ type: 'player:left', data: { id: conn.id } });
     } else {
       player.connected = false;
       console.log(`Player ${player.name} disconnected — seat held for reconnect`);
-      this.broadcast({ type: 'room:state', data: this.room });
+      this.broadcastJson({ type: 'room:state', data: this.room });
 
       // Everyone still present may already have answered.
       const round = this.room.currentRound;
@@ -921,15 +933,15 @@ export default class CategoryCrashRoom implements Party.Server {
     this.timer = null;
   }
 
-  broadcast(message: unknown): void {
-    this.party.broadcast(JSON.stringify(message));
+  broadcastJson(message: unknown): void {
+    this.broadcast(JSON.stringify(message));
   }
 
-  sendTo(conn: Party.Connection, message: unknown): void {
+  sendTo(conn: Connection, message: unknown): void {
     conn.send(JSON.stringify(message));
   }
 
-  sendError(conn: Party.Connection, message: string): void {
+  sendError(conn: Connection, message: string): void {
     this.sendTo(conn, { type: 'error', data: { message } });
   }
 

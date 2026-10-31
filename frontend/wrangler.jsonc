@@ -1,0 +1,16 @@
+{
+  "name": "categorycrash",
+  "main": "party/worker.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "CategoryCrashRoom", "class_name": "CategoryCrashRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CategoryCrashRoom"] }],
+  "vars": {
+    // Production Next.js app. Local `wrangler dev` overrides this via .dev.vars.
+    "BACKEND_URL": "https://sa-category-crash.vercel.app"
+  }
+}
